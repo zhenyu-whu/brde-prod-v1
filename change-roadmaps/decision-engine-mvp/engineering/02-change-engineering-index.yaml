@@ -1,0 +1,722 @@
+schema_version: 1
+roadmap_id: decision-engine-mvp
+baseline:
+  path: engineering/01-global-engineering-baseline.md
+  baseline_id: BRDE-GE-BASELINE-1
+  sections:
+    GE-01: Application and Ownership Boundaries
+    GE-02: Tenant, Actor and Environment Context
+    GE-03: Canonical Identity and Schema Versioning
+    GE-04: Canonical Flow, Ports and Topology
+    GE-05: Typed Values and Expression Contract
+    GE-06: Common Node Contract
+    GE-07: Output Schema Lifecycle
+    GE-08: Execution Status, Errors and Degradation
+    GE-09: Flow Version, Artifact, Deployment and Pointer
+    GE-10: Resource Resolution, Fingerprints and Credentials
+    GE-11: Execution Modes and Side-Effect Policy
+    GE-12: Runtime State Namespaces
+    GE-13: External API and Internal RPC Boundaries
+    GE-14: Concurrency, Idempotency and Transactions
+    GE-15: Audit, Execution Logs and Observability
+    GE-16: Security Baseline
+    GE-17: Compatibility and Shared Fixtures
+    GE-18: Global Non-Functional Budgets
+    GE-19: Change-Local Design Topics
+    GE-20: Baseline Review Checklist
+spikes:
+  SPK-01:
+    title: Zen-derived Engine Model Fit
+    path: engineering/03-required-technical-spikes.md
+    status: required
+    blocks:
+    - CHG-04
+  SPK-02:
+    title: CEL Subset and Cross-Language Consistency
+    path: engineering/03-required-technical-spikes.md
+    status: required
+    blocks:
+    - CHG-03
+  SPK-03:
+    title: Counter Atomic Read-Before-Write
+    path: engineering/03-required-technical-spikes.md
+    status: required
+    blocks:
+    - CHG-05
+  SPK-04:
+    title: Artifact Distribution and Atomic Activation
+    path: engineering/03-required-technical-spikes.md
+    status: required
+    blocks:
+    - CHG-07
+    - CHG-08
+  SPK-05:
+    title: Function Isolation Runtime
+    path: engineering/03-required-technical-spikes.md
+    status: required
+    blocks:
+    - CHG-15
+  SPK-06:
+    title: Durable Execution Log Pipeline
+    path: engineering/03-required-technical-spikes.md
+    status: required
+    blocks:
+    - CHG-16
+changes:
+  CHG-01:
+    title: 建立多租户平台与运行骨架
+    handoff: handoffs/01-establish-platform-foundation.md
+    required_predecessors: []
+    required_sections:
+    - GE-01
+    - GE-02
+    - GE-03
+    - GE-08
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - application-boundaries-v1
+    - tenant-context-v1
+    - platform-error-envelope-v1
+    - audit-minimum-v1
+    - internal-protocol-bootstrap-v1
+    local_design_topics:
+    - monorepo directories and package tooling
+    - Prisma bootstrap schema
+    - session implementation
+    - service health endpoints
+    - trace and logging libraries
+    - local infrastructure topology
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-02:
+    title: 建立决策流领域模型与画布编辑骨架
+    handoff: handoffs/02-establish-flow-domain-and-authoring-shell.md
+    required_predecessors:
+    - CHG-01
+    required_sections:
+    - GE-02
+    - GE-03
+    - GE-04
+    - GE-06
+    - GE-14
+    - GE-16
+    - GE-17
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - canonical-flow-model-v1
+    - draft-revision-v1
+    - stable-node-and-port-identity-v1
+    local_design_topics:
+    - flow/project persistence schema
+    - React Flow state architecture
+    - autosave debounce and retry
+    - conflict response UX
+    - graph validator implementation
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-03:
+    title: 建立值、表达式、变量与输出 Schema 契约
+    handoff: handoffs/03-establish-expression-variable-and-schema-contracts.md
+    required_predecessors:
+    - CHG-01
+    - CHG-02
+    required_sections:
+    - GE-03
+    - GE-04
+    - GE-05
+    - GE-06
+    - GE-07
+    - GE-08
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes:
+    - SPK-02
+    owned_contracts:
+    - expression-language-v1
+    - typed-value-v1
+    - stable-reference-v1
+    - output-schema-state-v1
+    - expression-golden-fixture-v1
+    local_design_topics:
+    - editor library and token representation
+    - backend validation API
+    - AST/cache persistence choice
+    - fixture runner integration
+    - incremental type feedback
+    propose_readiness: blocked
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-04:
+    title: 实现 Request、Decision Table、Response 最小决策链路
+    handoff: handoffs/04-implement-request-decision-table-response-slice.md
+    required_predecessors:
+    - CHG-02
+    - CHG-03
+    required_sections:
+    - GE-03
+    - GE-04
+    - GE-05
+    - GE-06
+    - GE-07
+    - GE-08
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes:
+    - SPK-01
+    owned_contracts:
+    - request-node-v1
+    - decision-table-node-v1
+    - response-node-v1
+    - core-compiler-mapping-v1
+    local_design_topics:
+    - Request schema persistence and editor
+    - Decision Table row/column storage
+    - shared Response contract persistence
+    - Zen adapter mapping
+    - node explainability format
+    propose_readiness: blocked
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-05:
+    title: 补齐画像、名单查询与 Counter 事实能力
+    handoff: handoffs/05-add-profile-list-query-and-counter-facts.md
+    required_predecessors:
+    - CHG-04
+    required_sections:
+    - GE-02
+    - GE-03
+    - GE-05
+    - GE-06
+    - GE-07
+    - GE-08
+    - GE-11
+    - GE-12
+    - GE-14
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes:
+    - SPK-03
+    owned_contracts:
+    - profile-query-node-v1
+    - list-query-node-v1
+    - counter-node-v1
+    - built-in-profile-catalog-v1
+    - environment-list-v1
+    local_design_topics:
+    - profile adapter interface
+    - list resource schema
+    - Redis key builders
+    - Counter algorithm and cleanup
+    - idempotency marker TTL
+    - dependency degradation behavior
+    propose_readiness: blocked
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-06:
+    title: 实现 Draft 静态门禁、节点验证与整流测试
+    handoff: handoffs/06-add-draft-validation-and-test-workbench.md
+    required_predecessors:
+    - CHG-05
+    required_sections:
+    - GE-04
+    - GE-05
+    - GE-06
+    - GE-07
+    - GE-08
+    - GE-11
+    - GE-12
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - draft-validation-result-v1
+    - temporary-execution-v1
+    - node-test-result-v1
+    - flow-test-result-v1
+    - test-namespace-v1
+    local_design_topics:
+    - validation orchestration
+    - test result session storage
+    - temporary artifact RPC payload
+    - workbench UI state
+    - test namespace lifecycle and cleanup
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-07:
+    title: 实现不可变版本、环境 Artifact 与 Dev Active Build
+    handoff: handoffs/07-add-flow-version-compilation-and-dev-active-build.md
+    required_predecessors:
+    - CHG-06
+    required_sections:
+    - GE-03
+    - GE-04
+    - GE-07
+    - GE-09
+    - GE-10
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes:
+    - SPK-04
+    owned_contracts:
+    - flow-version-v1
+    - compiled-artifact-v1
+    - artifact-hash-v1
+    - dev-active-build-v1
+    - version-diff-v1
+    local_design_topics:
+    - version and artifact persistence
+    - compiler job transaction boundaries
+    - artifact payload storage
+    - cache/prewarm implementation
+    - version numbering
+    - diff generation algorithm
+    propose_readiness: blocked
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-08:
+    title: 实现 Test 申请、手动发布与外部执行 API
+    handoff: handoffs/08-add-test-release-and-external-execution-api.md
+    required_predecessors:
+    - CHG-07
+    required_sections:
+    - GE-01
+    - GE-02
+    - GE-08
+    - GE-09
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes:
+    - SPK-04
+    owned_contracts:
+    - test-release-request-v1
+    - deployment-v1
+    - active-pointer-v1
+    - external-execute-api-v1
+    - bootstrap-test-key-v1
+    local_design_topics:
+    - release state tables
+    - deployment locking
+    - OpenAPI request/error schemas
+    - API key generation and digest
+    - executor auth cache
+    - minimum durable log interface
+    - rate-limit policy
+    propose_readiness: blocked
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-09:
+    title: 增加 Derived、Condition 与多返回响应
+    handoff: handoffs/09-add-derived-variables-and-condition-routing.md
+    required_predecessors:
+    - CHG-08
+    required_sections:
+    - GE-03
+    - GE-04
+    - GE-05
+    - GE-06
+    - GE-07
+    - GE-08
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - derived-variables-node-v1
+    - condition-node-v1
+    - branch-port-v1
+    - response-multi-shape-v1
+    local_design_topics:
+    - condition editor model
+    - branch identity and ordering
+    - variable visibility computation
+    - compiler branch mapping
+    - branch explainability
+    - single-to-multi response contract migration
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-10:
+    title: 完善成员、角色、高风险能力与 API Key 生命周期
+    handoff: handoffs/10-add-members-roles-capabilities-and-api-key-lifecycle.md
+    required_predecessors:
+    - CHG-08
+    required_sections:
+    - GE-01
+    - GE-02
+    - GE-03
+    - GE-08
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - role-capability-v1
+    - high-risk-capability-v1
+    - api-key-lifecycle-v1
+    - key-revocation-propagation-v1
+    local_design_topics:
+    - membership schema and invitation flow
+    - authorization policy implementation
+    - API key format and HMAC lookup
+    - rotation grace configuration
+    - last-used aggregation
+    - bootstrap migration
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-11:
+    title: 建立连接器、凭据与环境资源治理平台
+    handoff: handoffs/11-add-integration-resources-and-credentials.md
+    required_predecessors:
+    - CHG-07
+    - CHG-10
+    required_sections:
+    - GE-01
+    - GE-02
+    - GE-03
+    - GE-09
+    - GE-10
+    - GE-11
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - http-connector-v1
+    - channel-connector-v1
+    - credential-object-version-v1
+    - resource-resolution-v1
+    - resource-fingerprint-v1
+    - resource-protection-v1
+    local_design_topics:
+    - resource/credential tables
+    - envelope encryption provider
+    - environment binding UI/API
+    - connectivity test execution
+    - impact analysis queries
+    - canonical resource serializers
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-12:
+    title: 实现 HTTP 与 Notify 外联节点
+    handoff: handoffs/12-add-http-and-notify-nodes.md
+    required_predecessors:
+    - CHG-03
+    - CHG-06
+    - CHG-11
+    required_sections:
+    - GE-03
+    - GE-05
+    - GE-06
+    - GE-07
+    - GE-08
+    - GE-10
+    - GE-11
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - http-node-v1
+    - notify-node-v1
+    - external-test-mode-v1
+    - dynamic-http-schema-v1
+    local_design_topics:
+    - HTTP request parameter representation
+    - response schema inference
+    - egress gateway implementation
+    - notify provider adapters
+    - template token editor
+    - retry and idempotency policies
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-13:
+    title: 补齐名单写操作与统一副作用安全
+    handoff: handoffs/13-add-list-mutations-and-side-effect-safety.md
+    required_predecessors:
+    - CHG-05
+    - CHG-06
+    - CHG-10
+    required_sections:
+    - GE-02
+    - GE-06
+    - GE-08
+    - GE-11
+    - GE-12
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - list-write-node-v1
+    - list-side-effect-summary-v1
+    local_design_topics:
+    - atomic list commands
+    - TTL and normalization
+    - environment maintenance API
+    - test namespace cleanup
+    - idempotency semantics
+    - permission integration placeholders
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-14:
+    title: 实现 Prod 审批、发布、失败恢复与回滚
+    handoff: handoffs/14-add-prod-approval-release-rollback-and-recovery.md
+    required_predecessors:
+    - CHG-08
+    - CHG-10
+    - CHG-11
+    required_sections:
+    - GE-02
+    - GE-03
+    - GE-08
+    - GE-09
+    - GE-10
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes: []
+    owned_contracts:
+    - prod-release-request-v1
+    - approval-snapshot-v1
+    - deployment-retry-v1
+    - rollback-v1
+    local_design_topics:
+    - approval state schema
+    - risk calculation
+    - resource re-resolution transaction
+    - deployment lock choice
+    - retry UI/API
+    - rollback target selection
+    - Response multi-shape scope decision
+    propose_readiness: ready-after-predecessors
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-15:
+    title: 实现 Function 节点与隔离运行时
+    handoff: handoffs/15-add-function-node-and-sandbox-runtime.md
+    required_predecessors:
+    - CHG-03
+    - CHG-06
+    - CHG-07
+    - CHG-10
+    required_sections:
+    - GE-03
+    - GE-05
+    - GE-06
+    - GE-07
+    - GE-08
+    - GE-11
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes:
+    - SPK-05
+    owned_contracts:
+    - function-node-v1
+    - function-runtime-policy-v1
+    - function-output-schema-v1
+    local_design_topics:
+    - chosen sandbox architecture
+    - code transformation and module loader
+    - resource enforcement
+    - editor/lint integration
+    - error source maps
+    - runtime pool and isolation
+    propose_readiness: blocked
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
+  CHG-16:
+    title: 完成审计、执行日志、指标、可靠性与 MVP 硬化
+    handoff: handoffs/16-complete-audit-observability-reliability-and-mvp-hardening.md
+    required_predecessors:
+    - CHG-09
+    - CHG-12
+    - CHG-13
+    - CHG-14
+    - CHG-15
+    required_sections:
+    - GE-01
+    - GE-02
+    - GE-08
+    - GE-09
+    - GE-10
+    - GE-11
+    - GE-12
+    - GE-13
+    - GE-14
+    - GE-15
+    - GE-16
+    - GE-17
+    - GE-18
+    - GE-20
+    blocking_spikes:
+    - SPK-06
+    owned_contracts:
+    - audit-query-v1
+    - execution-log-v1
+    - durable-log-pipeline-v1
+    - operational-slo-v1
+    - mvp-release-gate-v1
+    local_design_topics:
+    - ClickHouse schema
+    - durable queue implementation
+    - audit enrichment workers
+    - dashboards and alerts
+    - load and chaos test harness
+    - backup/restore automation
+    - runbooks
+    propose_readiness: blocked
+    source_policy:
+      must_read:
+      - handoff
+      - required global sections
+      - current openspec/specs
+      - current code
+      must_freeze_in_artifacts: true
+      must_not_redefine_global_contracts: true
