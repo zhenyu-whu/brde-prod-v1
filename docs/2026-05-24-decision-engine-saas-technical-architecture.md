@@ -1,590 +1,647 @@
-# 决策引擎 SaaS MVP 技术架构设计文档
+# 决策引擎 SaaS MVP 技术架构基线
 
-## 0. 文档状态
+## 0. 文档状态与边界
 
-- 日期：2026-05-24
-- 状态：开发启动前技术架构基线
-- 产品依据：`docs/plans/2026-02-27-decision-engine-saas-design.md`
-- 范围：完整 MVP，而不是仅覆盖 P0 垂直切片
+- 文档版本：2026-08-02
+- 文档状态：阶段 1 架构语义基线
+- 产品依据：`docs/2026-02-27-decision-engine-saas-design.md`
+- 适用范围：P0、P1 与完整 MVP
+- 下游用途：作为 Change Capability Framework 的架构输入和阶段 3 全局工程设计的上游约束
 
-本文是决策引擎 SaaS 的独立技术架构设计文档。产品范围、页面与节点语义以产品基线文档为准；本文只定义 MVP 阶段的技术选型、服务边界、数据架构、执行架构、安全方案、部署方案和测试策略。
+本文确定系统边界、关键技术选型、全局架构不变量、核心数据流、安全原则、可靠性目标和技术风险。它不预先定义每个 Change 的数据库表、API DTO、Proto 字段、Redis 命令或文件结构；这些由阶段 3 的全局工程基线和后续 OpenSpec Change `design.md` 逐步固化。
 
-MVP 的实施可以按 P0/P1 分阶段交付，但技术架构必须覆盖完整 MVP：11 类节点、控制台编排、节点验证、整流测试、版本快照、Test/Prod 发布治理、审批、回滚、资源与凭据管理、审计、执行日志、基础指标和外部 HTTP API 接入。
+---
 
-## 1. 架构目标
+## 1. 架构目标与非目标
 
 ### 1.1 目标
 
-- 支持公有云多租户 SaaS 首发，架构预留私有化交付能力。
-- 控制面与执行面分离，避免控制台、审批和后台任务影响实时决策 SLA。
-- 复用既有执行引擎资产：执行核心基于 GoRules ZEN Engine 改进版的内部 Go 引擎。
-- 控制台侧优先保证产品模型表达力、治理闭环和开发效率。
-- 执行侧优先保证低延迟、高可用、可解释日志和资源隔离。
-- 所有发布到 Test/Prod 的运行产物必须可追溯、可回滚、可审计。
+- **ARC-GOAL-001**：公有云多租户 SaaS 首发，架构预留私有化交付。
+- **ARC-GOAL-002**：控制面与实时执行面分离，控制台故障不进入正常决策热路径。
+- **ARC-GOAL-003**：复用基于 GoRules ZEN Engine 改进的内部 Go 执行引擎。
+- **ARC-GOAL-004**：产品配置、不可变版本、环境 Artifact 和生效指针可追溯。
+- **ARC-GOAL-005**：跨 TypeScript 与 Go 的模型、表达式和错误语义可验证一致。
+- **ARC-GOAL-006**：租户、环境、运行状态和外联资源具有明确隔离边界。
+- **ARC-GOAL-007**：发布、回滚、审计和执行日志在部分故障下保持可恢复。
+- **ARC-GOAL-008**：P0 先完成六节点垂直切片，架构不阻断 P1 的完整 MVP。
 
 ### 1.2 非目标
 
-- MVP 不从零自研通用工作流引擎。
-- MVP 不引入微服务化拆分控制面。
-- MVP 不绑定单一云厂商能力。
-- MVP 不提供实时监控控制台页面，但必须采集基础指标。
-- MVP 不提供线上请求回放调试页面，但必须产出结构化执行日志。
+- MVP 不从零自研通用工作流调度平台。
+- MVP 不将控制面拆成多个独立微服务。
+- MVP 不在执行热路径强依赖控制面 API。
+- MVP 不绑定单一云厂商。
+- MVP 不建设客户可见实时监控或请求回放页面。
+- MVP 不支持流程并行、隐式 Merge 和循环。
+- MVP 不开放任意用户代码宿主能力。
 
-## 2. 已确认技术选型
+---
+
+## 2. 全局架构不变量
+
+以下约束跨所有 Change 生效。
+
+### 2.1 控制面与执行面
+
+- **ARC-INV-001**：控制台只调用控制面 API；客户实时决策请求直接进入 Go 执行面。
+- **ARC-INV-002**：控制面负责 Draft、版本、资源、审批、权限、审计和编译编排，不直接执行节点逻辑。
+- **ARC-INV-003**：执行面只读取运行所需配置和状态，不修改 Draft、版本、审批或权限。
+- **ARC-INV-004**：控制面不可用时，执行面应继续运行已经加载和缓存的生效 Artifact。
+
+### 2.2 权威数据和缓存
+
+- **ARC-INV-005**：PostgreSQL 是控制面治理对象、版本、部署和生效指针的权威事实源。
+- **ARC-INV-006**：Redis 缓存和本地缓存不得成为发布治理的唯一事实源。
+- **ARC-INV-007**：执行请求正常热路径不得每次访问 PostgreSQL；本地 Artifact 缓存优先，缓存缺失通过受控加载路径恢复。
+- **ARC-INV-008**：运行状态、缓存、队列和限流至少使用独立逻辑命名空间；生产部署应支持按风险拆分实例。
+
+### 2.3 版本和产物
+
+- **ARC-INV-009**：Flow Version 环境无关，Compiled Artifact 环境相关。
+- **ARC-INV-010**：Artifact 必须由明确 Draft revision 或 Flow Version、目标环境、编译器版本和资源解析结果确定。
+- **ARC-INV-011**：发布只切换环境 Active Pointer；切换失败不得破坏上一指针。
+- **ARC-INV-012**：历史 Flow Version 和成功 Artifact 不得被原地修改。
+
+### 2.4 流程和节点
+
+- **ARC-INV-013**：控制台、控制面校验器、编译器和执行面共享同一 canonical flow model。
+- **ARC-INV-014**：节点稳定标识、`namespaceKey` 和配置 Schema 版本必须跨保存、版本和重建保持可追溯。
+- **ARC-INV-015**：MVP 图模型不允许隐式汇合、并行和循环。
+- **ARC-INV-016**：动态输出 Schema 是 Draft/Version 的显式状态，不得仅存在于前端会话。
+
+### 2.5 表达式和错误
+
+- **ARC-INV-017**：Go 运行时是表达式求值的唯一权威语义。
+- **ARC-INV-018**：TypeScript 侧只做编辑期校验和提示，必须通过共享规范和 golden fixtures 与 Go 对齐。
+- **ARC-INV-019**：节点错误、降级、未到达和平台错误使用统一分类，不允许节点私自创建冲突语义。
+
+### 2.6 租户和安全
+
+- **ARC-INV-020**：所有控制面和执行面读取都必须携带不可伪造的 tenant context。
+- **ARC-INV-021**：环境由 API Key 或受信控制面请求决定，普通客户请求不得自由切换。
+- **ARC-INV-022**：Dev/Test 资源不得隐式回退到 Prod 运行绑定。
+- **ARC-INV-023**：完整 API Key 和连接器凭据不得写入日志，不得在创建后重新明文展示。
+- **ARC-INV-024**：外联必须通过受控连接器和统一 egress 安全策略。
+
+---
+
+## 3. 技术选型
 
 | 领域 | 选型 | 说明 |
 | --- | --- | --- |
-| 产品交付形态 | 公有云多租户 SaaS 优先 | 架构预留私有化部署 |
-| 仓库组织 | pnpm monorepo | 前端、控制面、共享包、proto 和 Go 执行面同仓管理 |
-| 前端 | React + Vite + React Router | 登录后控制台 SPA，不做 SSR |
-| 画布 | React Flow | 承载流程图编排、节点和连线交互 |
-| UI 组件库 | Ant Design | 适合中文企业后台、复杂表格和表单 |
-| 控制面后端 | NestJS 模块化单体 | 控制面复杂治理逻辑集中在一个进程边界内分模块组织 |
-| ORM | Prisma | PostgreSQL 建模、迁移和 TypeScript 类型体验优先 |
-| 执行面 | Go 服务 | 嵌入基于 GoRules ZEN Engine 改进的既有引擎 |
-| 内部协议 | Connect RPC / Protobuf | 固定 TypeScript 控制面与 Go 执行面契约 |
-| 主库 | PostgreSQL | 控制面强一致治理数据和复杂 JSONB 快照 |
-| 运行态存储 | Redis | 名单、Counter、缓存、限流和 BullMQ |
-| 异步任务 | BullMQ | 发布后预热、资源影响分析、日志补偿等后台任务 |
-| 执行日志 | ClickHouse | 高频结构化运行日志与后续离线分析 |
-| 指标/追踪 | OpenTelemetry + Prometheus/Grafana | 内部运维观测基础 |
-| 表达式 | CEL 风格表达式 | 受控、可解释、可做类型校验；Go 运行时语义为准 |
-| Function 沙箱 | Goja 或同类纯 Go JS VM | 运行在 Go 执行面内，禁用宿主 IO |
-| 密钥保护 | Envelope encryption + KMS Provider 预留 | API Key 用 hash 校验并以密文支持高权限复制，连接器凭据可解密运行 |
-| 部署 | Docker Compose 开发/演示，Kubernetes 生产 | 生产优先托管 PostgreSQL/Redis/ClickHouse |
+| 仓库 | pnpm monorepo | TypeScript、Go、Proto 和基础设施同仓 |
+| 控制台 | React + Vite + React Router | 登录后 SPA |
+| 画布 | React Flow | 图编辑与节点交互 |
+| UI | Ant Design | 企业后台和复杂表单 |
+| 控制面 | NestJS 模块化单体 | 集中治理事务与业务模块 |
+| ORM | Prisma | PostgreSQL 类型和迁移 |
+| 执行面 | Go | 嵌入 Zen-derived 内部引擎 |
+| 内部协议 | Connect RPC + Protobuf | TypeScript/Go 契约 |
+| 表达式 | 明确 CEL 子集，Go 实现为准 | 不自定义模糊“CEL 风格”语法 |
+| 主库 | PostgreSQL | 强一致治理数据 |
+| 运行状态 | Redis | 名单、Counter、限流等 |
+| 缓存 | Redis + executor 本地缓存 | Active Pointer、Artifact、Key 元数据 |
+| 异步任务 | BullMQ | 控制面后台工作 |
+| 执行日志 | ClickHouse | 高频结构化日志 |
+| 指标追踪 | OpenTelemetry + Prometheus/Grafana | 内部运维 |
+| Function | 待 Spike 验证的隔离 JS 运行时 | Goja 仅为候选，不作为未验证结论 |
+| 密钥保护 | Envelope encryption + KMS Provider | 生产必须使用受管理密钥 |
+| 部署 | Docker Compose / Kubernetes | 本地演示与生产 |
 
-## 3. 总体架构
+技术选型可以由后续 ADR 调整，但不得违反第 2 章架构不变量。
 
-MVP 运行态拆为 4 类应用：
+---
 
-1. `console-web`：React 控制台，承载决策流、版本发布、审批中心、数据与集成、组织权限、审计合规等页面。
-2. `control-api`：NestJS 控制面 API，负责租户、权限、Draft、版本、发布、审批、资源、凭据、API Key、审计和编译入口。
-3. `control-worker`：NestJS worker，使用 BullMQ 执行后台任务。
-4. `executor-go`：Go 实时执行服务，嵌入 Zen-derived 引擎，承载客户侧决策调用、控制台节点验证、整流测试和执行日志写出。
+## 4. 系统上下文与应用边界
 
-控制台只调用 `control-api`。外部客户决策请求直接进入 `executor-go`，不经过 `control-api`，避免控制面进入实时决策主链路。
+### 4.1 应用
+
+1. `console-web`
+   - 控制台页面、画布、编辑器、Diff、问题面板和测试工作台。
+2. `control-api`
+   - 租户、身份、Draft、版本、发布、审批、资源、凭据、Key、审计和编译编排。
+3. `control-worker`
+   - Outbox、预热、影响分析、补偿、异步审计富化和后台任务。
+4. `executor-go`
+   - 外部决策 API、内部执行 RPC、Artifact 加载、节点执行、运行状态、日志和指标。
+5. 基础设施
+   - PostgreSQL、运行状态 Redis、缓存/队列 Redis、ClickHouse、指标系统和 KMS。
+
+### 4.2 主要调用关系
 
 ```mermaid
 flowchart LR
-  User["控制台用户"] --> Web["console-web"]
-  Web --> API["control-api<br/>NestJS"]
-  API --> PG["PostgreSQL"]
-  API --> Redis["Redis"]
-  API --> Worker["control-worker<br/>BullMQ"]
-  API --> ExecRPC["executor-go<br/>Connect RPC"]
+  User[控制台用户] --> Web[console-web]
+  Web --> API[control-api]
+  API --> PG[(PostgreSQL)]
+  API --> Worker[control-worker]
+  API --> RPC[executor-go internal RPC]
   Worker --> PG
-  Worker --> Redis
-  Worker --> ExecRPC
+  Worker --> Cache[(Redis cache/jobs)]
+  Worker --> RPC
 
-  Client["客户业务系统"] --> ExecHTTP["executor-go<br/>HTTP API"]
-  ExecHTTP --> Redis
-  ExecHTTP --> PG
-  ExecHTTP --> CH["ClickHouse"]
-  ExecHTTP --> OTel["OpenTelemetry"]
+  Client[客户系统] --> Exec[executor-go HTTP API]
+  Exec --> Local[Local artifact cache]
+  Exec --> Cache
+  Exec --> Runtime[(Redis runtime state)]
+  Exec --> CH[(ClickHouse / durable log path)]
+  Exec --> OTel[OpenTelemetry]
 ```
 
-## 4. Monorepo 结构
+### 4.3 热路径原则
 
-建议目录结构：
+- 客户请求不经过 `control-api`。
+- executor 首先使用本地 Artifact 和 Key 缓存。
+- 缓存缺失时使用受控加载路径，避免请求风暴。
+- PostgreSQL 短暂不可用时，已加载 Artifact 应继续服务。
+- 日志和指标失败不得改变业务响应，但必须产生内部故障信号。
+
+---
+
+## 5. 控制面模块边界
+
+建议模块：
+
+- `IdentityModule`
+- `AccessControlModule`
+- `DecisionFlowModule`
+- `ValidationModule`
+- `ExpressionContractModule`
+- `VersionModule`
+- `CompilerModule`
+- `ReleaseModule`
+- `ApprovalModule`
+- `ResourceModule`
+- `CredentialModule`
+- `ApiKeyModule`
+- `AuditModule`
+- `ExecutorClientModule`
+- `JobModule`
+
+边界要求：
+
+- **ARC-CTRL-001**：模块之间通过应用服务和明确事务边界协作，不允许跨模块任意直接更新表。
+- **ARC-CTRL-002**：所有控制面写操作必须携带 tenant、actor、request id 和预期 revision/状态。
+- **ARC-CTRL-003**：高风险操作先通过权限与二次确认校验，再进入业务事务。
+- **ARC-CTRL-004**：最小审计事件与关键业务写入在同一 PostgreSQL 事务中完成。
+- **ARC-CTRL-005**：异步 Diff、影响摘要和通知通过 Outbox 触发，不能代替最小审计事件。
+
+---
+
+## 6. Canonical Flow Model 与编译边界
+
+### 6.1 产品模型
+
+产品模型至少包含：
+
+- flow 和 draft identity
+- graph nodes、ports 和 edges
+- node type 与 config schema version
+- stable node id 和 namespaceKey
+- Request schema
+- Response shared contract
+- expression tokens/AST representation
+- inferred/declared output schemas and status
+- logical resource references
+- error policies
+- editor-only layout metadata
+
+### 6.2 编译输入
+
+- Draft revision 或 Flow Version。
+- 目标环境。
+- 编译器版本。
+- 环境资源解析结果。
+- 内置画像字段目录版本。
+- 安全和执行限制。
+- 日志摘要策略。
+
+### 6.3 编译输出
+
+- Zen-derived 可加载模型或内部等价执行模型。
+- 节点、端口和 namespace 映射。
+- 目标环境资源绑定和资源指纹。
+- 输出 Schema 快照。
+- 执行、安全、超时和摘要策略。
+- 产物 hash 和兼容版本。
+
+### 6.4 编译规则
+
+- **ARC-COMP-001**：同一规范化输入必须生成稳定 hash。
+- **ARC-COMP-002**：编译前后都必须进行结构和节点专属校验。
+- **ARC-COMP-003**：动态输出 Schema 为 `MISSING / VALID / STALE / CONFLICTED` 时，只有满足下游引用规则的状态可以生成版本。
+- **ARC-COMP-004**：编译器不得从前端会话临时结果读取隐式状态。
+- **ARC-COMP-005**：编译器升级必须记录版本，并通过 fixture 验证历史语义或明确拒绝不兼容版本。
+
+---
+
+## 7. Flow Version、Artifact、Deployment 和 Active Pointer
+
+### 7.1 对象关系
 
 ```text
-apps/
-  console-web/        # React + Vite 控制台
-  control-api/        # NestJS API 进程
-  control-worker/     # NestJS BullMQ worker 进程
-  executor-go/        # Go 执行服务
-packages/
-  shared/             # TypeScript 共享类型、常量、校验辅助
-  proto/              # Protobuf/Connect RPC 契约
-  config/             # 共享工程配置
-  eslint-config/      # 前端/后端 lint 配置
-  tsconfig/           # TypeScript 基础配置
-infra/
-  docker-compose/     # 本地和演示环境
-  k8s/                # 生产部署清单或 Helm chart
-  migrations/         # 数据库迁移入口，Prisma 为主
-docs/
-  plans/              # 产品与技术设计文档
+DecisionFlow
+  └─ Draft(revision N)
+       ├─ Dev CompiledArtifact -> Dev Active Pointer
+       └─ FlowVersion V
+            ├─ Test CompiledArtifact -> Test Deployment -> Test Active Pointer
+            └─ Prod CompiledArtifact -> Prod Deployment -> Prod Active Pointer
 ```
 
-TypeScript 包使用 `pnpm` workspace 管理。Go 执行面作为同仓独立应用，通过 `packages/proto` 生成 Go 与 TypeScript 双端代码。
+### 7.2 发布事务
 
-## 5. 服务边界
+- **ARC-REL-001**：Flow Version 创建和其产品快照持久化必须原子。
+- **ARC-REL-002**：Artifact 编译可以异步预热，但最终发布确认必须重新验证目标 Artifact 和资源一致性。
+- **ARC-REL-003**：Deployment 使用幂等键和状态机。
+- **ARC-REL-004**：Active Pointer 的权威切换在 PostgreSQL 事务中完成。
+- **ARC-REL-005**：缓存失效和 executor 通知通过事务后 Outbox 执行。
+- **ARC-REL-006**：executor 遇到旧缓存时必须根据版本化指针或失效信号收敛，不能依赖广播消息绝对可靠。
+- **ARC-REL-007**：同一 flow/environment 的发布和回滚使用串行化锁或等价并发控制。
 
-### 5.1 console-web
+### 7.3 资源指纹
 
-职责：
+- 行为资源指纹基于环境解析后的规范化行为字段。
+- 显示名称、更新时间等非行为字段不进入指纹。
+- 凭据对象引用可以进入行为绑定，active 凭据版本不进入发布阻断指纹。
+- 实际凭据版本必须进入执行日志。
+- 指纹算法和 canonical JSON 规则由阶段 3 全局工程基线固定。
 
-- 控制台页面、路由、权限态展示。
-- React Flow 画布、节点库、节点编辑器、问题面板、整流测试工作台。
-- Value Editor、Expression Editor、Schema Editor、Diff Viewer、JSON Viewer 等共享编辑组件。
+---
 
-边界：
+## 8. 运行时执行架构
 
-- 不直接访问数据库、Redis、ClickHouse 或执行面公开 HTTP API。
-- 不在前端自行决定提审门禁、版本生成、资源指纹或发布一致性。
-- 可做即时 UI 级校验，但最终语义以后端校验为准。
+### 8.1 外部请求流程
 
-### 5.2 control-api
+1. 解析并校验环境 API Key。
+2. 取得 tenant、environment、Key fingerprint 和请求限额。
+3. 校验或生成 request id 和幂等上下文。
+4. 按 `(tenant, flow, environment)` 解析 Active Pointer。
+5. 从本地缓存加载 Artifact；缺失时使用单飞加载。
+6. 校验 Request Schema。
+7. 按单路径图执行节点。
+8. 生成用户 Response 或统一平台错误。
+9. 异步写出日志、指标和运行状态补偿信息。
 
-职责：
+### 8.2 节点验证和整流测试
 
-- 控制台 REST API 与 OpenAPI 文档。
-- 租户、成员、角色、高风险能力与 JWT Session。
-- 决策流 Draft、版本快照、Dev Active Build、Test/Prod 生效指针。
-- 发布申请、审批、发布确认、回滚。
-- 资源定义、凭据、API Key、审计日志。
-- 产品配置模型到执行产物的编译入口。
-- 通过 Connect RPC 调用执行面完成节点验证、整流测试、产物预热和健康检查。
+- 由控制面强制持久化 Draft revision。
+- 编译临时测试 Artifact。
+- 通过内部 RPC 调用 executor。
+- 测试请求必须携带执行模式、目标节点和测试状态命名空间。
+- 节点未到达返回 `NOT_REACHED`，而不是执行错误。
+- 真实外联测试必须携带权限证明、环境和审计上下文。
 
-边界：
+### 8.3 Counter
 
-- 不承载外部客户实时决策流量。
-- 不直接执行决策流节点逻辑。
-- 不绕过执行面返回节点验证或整流测试结果。
+- 外部环境执行使用原子 read-before-write。
+- request id 或业务幂等键用于防止重复记录。
+- 状态按 tenant、flow、environment 和 counter item 隔离。
+- 节点验证和整流测试使用独立测试命名空间。
+- 精确 Redis 数据结构和窗口算法由对应 Change 设计与 Spike 确定。
 
-### 5.3 control-worker
+### 8.4 List
 
-职责：
+- 名单 key 按 tenant、environment、list resource 隔离。
+- Draft 测试写操作进入测试命名空间。
+- 控制台直接维护环境名单时必须使用高风险权限和审计。
+- List 与 Counter 不共享统一的泛化 key 模板，分别定义命名空间。
 
-- 发布后产物预热。
-- 资源影响范围分析。
-- 凭据轮换影响分析。
-- 审计异步补充。
-- ClickHouse 执行日志投递补偿。
-- 队列重试、失败任务记录和运维指标。
+### 8.5 HTTP 和 Notify
 
-边界：
+- 所有外联通过连接器解析环境配置和凭据。
+- 统一 egress 层执行协议、地址、DNS、跳转、Header、大小和超时检查。
+- Draft 默认受保护；真实调用要求显式模式。
+- 幂等重试只允许在满足节点和对端约束时启用。
 
-- 可复用 `control-api` 的业务模块代码，但以独立进程部署。
-- 不处理用户同步请求。
+### 8.6 Function
 
-### 5.4 executor-go
+- Function 运行时必须与 executor 主进程的可用性和资源隔离要求匹配。
+- 候选方案必须经过安全和容量 Spike。
+- 若内嵌 VM 无法提供强制内存隔离，允许改为独立隔离执行服务。
+- Function 不得成为 P0 前置依赖。
 
-职责：
+---
 
-- 外部 HTTP 决策 API。
-- 内部 Connect RPC 执行接口。
-- API Key 校验、环境解析、租户限流。
-- 按 `(tenant_id, flow_id, env)` 加载 Dev Active Build 或 Test/Prod 当前版本。
-- 调用 Zen-derived 引擎执行决策产物。
-- 读取 Redis 名单和 Counter。
-- 解析资源、凭据和连接器运行配置。
-- 执行 HTTP、Notify、Function 等节点运行时能力。
-- 异步写出结构化执行日志和指标。
+## 9. 存储架构
 
-边界：
+### 9.1 PostgreSQL
 
-- 不修改 Draft、版本、审批、资源定义和权限配置。
-- 不承担控制面治理。
-- 对 PostgreSQL 只做运行所需的只读查询和缓存加载。
+保存：
 
-## 6. 控制面模块划分
+- tenants、users、memberships、roles、capabilities
+- projects、flows、drafts、revisions
+- flow versions、compiled artifact metadata
+- release requests、approval snapshots
+- deployments、active pointers、rollback records
+- resource definitions、environment bindings
+- credential objects and encrypted versions
+- API Key hashes and lifecycle metadata
+- audit events and outbox events
 
-`control-api` 采用 NestJS 模块化单体：
+复杂不可变快照可以使用 JSONB，但频繁治理查询字段必须关系化并索引。
 
-- `IdentityModule`：登录、JWT Session、租户上下文、成员状态。
-- `AccessControlModule`：全局角色、高风险能力、权限 Guard、二次确认。
-- `DecisionFlowModule`：项目收纳、决策流列表、Draft 保存、画布校验、节点验证入口、整流测试入口、从历史版本重建 Draft。
-- `VersionModule`：版本生成、版本快照、版本 Diff、资源指纹固化、Dev Active Build 生成。
-- `ReleaseModule`：Test/Prod 发布申请、发布确认、当前生效指针切换、回滚、发布失败记录。
-- `ApprovalModule`：审批中心列表、审批详情、通过、驳回、撤销、审批快照。
-- `ResourceModule`：系统内置画像源目录、名单资源、HTTP 连接器、通道连接器、受保护状态、影响范围。
-- `CredentialModule`：凭据对象、凭据版本、active 切换、envelope encryption、凭据影响分析。
-- `ApiKeyModule`：Dev/Test/Prod 环境级 API Key、当前/备用 Key、生成、提升、停用、哈希元数据。
-- `AuditModule`：审计事件写入、查询、详情和脱敏摘要。
-- `CompilerModule`：产品模型编译、静态校验、执行产物摘要和 hash。
-- `ExecutorClientModule`：Connect RPC 客户端封装。
-- `JobModule`：BullMQ 队列、任务注册、重试和失败处理。
+### 9.2 Redis runtime state
 
-所有写操作必须进入审计。关键高风险操作必须经过权限 Guard 和二次确认。
+承载：
 
-## 7. 数据与存储架构
+- environment-scoped Lists
+- Counter windows and idempotency markers
+- execution-level state needed by supported nodes
 
-### 7.1 PostgreSQL
+不得使用可随意淘汰的缓存策略。生产应启用持久化和容量保护。
 
-PostgreSQL 是控制面唯一主库，保存强一致治理数据：
+### 9.3 Redis cache/jobs
 
-- 租户、成员、角色、高风险能力。
-- 决策流、项目归类、Draft、版本快照、Dev Active Build、环境生效指针。
-- 发布申请、审批快照、发布记录、回滚记录。
-- 名单资源、HTTP 连接器、通道连接器、系统内置画像源目录元数据。
-- 凭据对象、凭据版本元数据和密文。
-- API Key 哈希、加密密文、短指纹、环境、状态和审计元数据。
-- 审计日志索引与详情。
+承载：
 
-复杂配置使用 `JSONB`：
+- API Key metadata cache
+- Active Pointer cache
+- Artifact distribution/cache metadata
+- rate limiting
+- BullMQ and Outbox consumers
 
-- React Flow 图结构。
-- 节点配置。
-- 表达式 token。
-- Request/Response Schema。
-- 决策表列模型和规则行。
-- 版本快照。
-- 审批快照。
-- 执行产物摘要。
+运行状态与 jobs/cache 至少逻辑隔离；生产可以拆分多个 Redis 服务。
 
-治理查询字段必须使用关系列和索引，例如 `tenant_id`、`flow_id`、`env`、`status`、`created_at`、`resource_type`。
+### 9.4 ClickHouse 和日志可靠路径
 
-### 7.2 Redis
+- ClickHouse 保存结构化执行日志。
+- executor 不应只依赖“直接写 ClickHouse 失败后再补偿”的未定义机制。
+- MVP 必须具备可持久化的批处理或 durable queue 路径。
+- 日志重复写入必须可去重或查询容忍重复。
+- 日志链路不可反向阻塞业务响应。
 
-Redis 承载低延迟运行态：
-
-- 名单 key 集合和 TTL。
-- Counter 时间窗口统计。
-- 环境生效版本/Build 指针缓存。
-- API Key 校验缓存。
-- 版本产物加载缓存辅助。
-- 租户级限流。
-- BullMQ 队列和任务状态。
-
-Redis key 必须包含租户命名空间，运行态 key 至少包含 `tenant_id`，涉及决策执行的状态必须包含 `tenant_id:flow_id:env`。
-
-### 7.3 ClickHouse
-
-ClickHouse 保存结构化执行日志：
-
-- `request_id`、`tenant_id`、`flow_id`、`env`、`version_id/build_id`。
-- API Key 指纹、项目归属快照。
-- 请求开始/结束时间、总耗时、最终状态。
-- 命中 Response 节点、最终响应摘要、错误码和错误原因摘要。
-- 节点执行路径、节点状态、耗时、关键输入输出摘要。
-- 外呼、通知、降级、副作用和资源指纹摘要。
-
-执行日志写入不阻塞决策响应。写入失败只影响内部运维指标和补偿任务，不改变本次业务响应。
-
-### 7.4 指标与追踪
-
-OpenTelemetry 统一采集：
-
-- 控制面 API 延迟、错误率。
-- BullMQ 队列积压、任务失败、重试次数。
-- 执行面 QPS、p95/p99、错误率、超时率。
-- 节点耗时、降级率、外呼失败率、通知提交失败率。
-
-Prometheus/Grafana 用于内部运维。MVP 控制台不建设实时监控页面。
-
-## 8. 决策流版本产物与编译架构
-
-控制台保存产品配置模型，执行面运行引擎可执行模型。两者之间必须通过 `CompilerModule` 转换。
-
-### 8.1 编译输入
-
-编译输入包括：
-
-- 决策流图：节点、连线、坐标和节点类型。
-- 节点配置：11 类节点的配置模型。
-- Request 输入 Schema 与测试样例值。
-- Response 共享输出契约。
-- 表达式 token 与稳定 `namespaceKey` 引用。
-- 资源引用：名单、画像源、HTTP 连接器、通道连接器、凭据引用。
-- 环境和运行策略：异常策略、超时、重试、沙箱限制。
-
-### 8.2 编译输出
-
-编译输出是执行产物：
-
-- 引擎模型：Zen-derived 引擎可加载的 JSON Decision Model 或内部等价模型。
-- 运行元数据：tenant、flow、env、version/build、节点 ID 映射、namespaceKey 映射。
-- 资源绑定：资源引用清单、资源指纹、内置画像源字段目录版本。
-- 日志映射：节点名称、节点类型、输入输出摘要策略、脱敏策略。
-- 安全策略：Function 沙箱限制、超时、输出大小、外呼约束。
-- 产物 hash：用于预热、缓存、发布一致性和审计追溯。
-
-### 8.3 静态校验
-
-编译前后必须完成静态校验：
-
-- 有且仅有一个 Request。
-- 至少一个 Response，所有可达分支最终到达 Response。
-- 无环路、无不可达节点、无孤岛分支。
-- 表达式语法和类型校验通过。
-- 节点专属校验通过。
-- 资源引用存在且可用于目标环境。
-- 高风险节点与副作用节点满足权限和风险要求。
-- 生成版本时记录资源指纹；发布时校验指纹一致。
-
-### 8.4 Draft 测试与版本运行
-
-节点验证和整流测试使用临时执行产物：
-
-1. 前端触发执行。
-2. `control-api` 强制保存 Draft。
-3. `CompilerModule` 编译临时产物。
-4. `ExecutorClientModule` 通过 Connect RPC 调用 `executor-go`。
-5. 执行结果回写为当前会话结果和最近一次节点验证状态。
-
-正式运行使用不可变版本产物：
-
-1. Draft 通过门禁后生成不可变版本快照。
-2. 版本快照编译正式产物并记录 hash。
-3. 发布到环境时原子替换 Dev/Test/Prod 生效指针。
-4. `executor-go` 按环境指针加载对应产物。
-
-## 9. 执行面架构
-
-`executor-go` 是实时决策服务，核心是既有 Zen-derived Go 引擎。
-
-### 9.1 请求路由
-
-外部客户调用：
-
-1. 客户通过 HTTP API 提交 `flow_id` 与请求体。
-2. `executor-go` 校验 API Key hash，解析 `tenant_id` 和 `env`。
-3. 若请求携带 `X-Env`，必须与 API Key 绑定环境一致。
-4. 执行面按 `(tenant_id, flow_id, env)` 查询生效指针。
-5. `dev` 命中 Dev Active Build，`test/prod` 命中当前生效版本。
-6. 未部署时返回明确错误，不回退 Draft 或其他环境。
-
-### 9.2 运行时能力
-
-执行面负责：
-
-- Request Schema 校验。
-- 表达式求值。
-- Condition、Decision Table、Response 等纯计算节点。
-- Profile Query 调用系统内置画像源适配器。
-- List 读取或写入 Redis 名单。
-- Counter 读取 Redis 窗口统计。
-- HTTP 节点调用外部连接器。
-- Notify 节点提交通知请求。
-- Function 节点通过 Goja 类沙箱执行。
-- 节点异常策略、降级策略、超时和输出大小限制。
-
-### 9.3 资源解析
-
-资源定义不做用户可见版本，但版本产物记录资源指纹。执行时：
-
-- 名单、连接器等行为字段以受保护资源机制保证不可原地破坏当前 Test/Prod 运行语义。
-- 发布时校验审批后的资源指纹与当前资源定义一致。
-- 凭据 active 版本允许独立轮换；执行日志记录实际凭据版本指纹。
-- 内置画像源记录画像源标识和字段目录版本。
-
-### 9.4 Function 沙箱
-
-Function 节点采用 Goja 或同类纯 Go JS VM：
-
-- 入口固定为 `async handler(input)` 的受控单文件模块语义。
-- 编译阶段对 ESM/import 做静态检查和适配。
-- 仅允许 ECMAScript 内建能力和平台白名单模块。
-- 禁止 `fetch`、文件系统、环境变量、动态 `import()`、相对/绝对路径导入、宿主进程对象。
-- 强制超时、内存限制、输出大小限制。
-- 错误返回类型、消息、源码行列号和简化堆栈。
+---
 
 ## 10. API 与协议
 
-### 10.1 控制台 REST API
+### 10.1 控制台 API
 
-`control-api` 对 `console-web` 提供 REST API，并生成 OpenAPI 文档。API 必须统一：
+- REST + OpenAPI。
+- 统一租户上下文、分页、错误、revision、幂等、审计 request id 和权限模型。
+- 资源写入、版本生成、申请、部署和 Key 操作必须显式建模状态冲突。
 
-- 租户上下文。
-- 权限错误模型。
-- 表单校验错误模型。
-- 审计 request id。
-- 幂等写操作约束。
+### 10.2 外部执行 API
 
-### 10.2 外部决策 HTTP API
+建议固定为版本化路径，例如：
 
-`executor-go` 对客户业务系统提供 HTTP API：
+```http
+POST /v1/flows/{flow_id}:execute
+Authorization: Bearer <environment-key>
+X-Request-Id: optional
+Idempotency-Key: optional
+```
 
-- 鉴权：环境级 API Key。
-- 路由：请求体或路径中指定 `flow_id`。
-- 环境：由 API Key 绑定环境决定。
-- 响应：成功返回 Response 节点映射结果；系统错误返回统一错误结构。
-- 可追溯：每次响应包含或可关联 `request_id/trace_id`。
+精确 OpenAPI 由对应 Change 生成，但必须满足：
 
-### 10.3 内部 Connect RPC
+- 环境由 Key 决定。
+- 平台错误与用户 Response 分离。
+- request id 始终可获得。
+- 稳定错误码和 HTTP 状态。
+- 请求、响应和 deadline 限制。
+- 限流和重试语义。
 
-`control-api/control-worker` 与 `executor-go` 通过 Connect RPC / Protobuf 通信。首版接口至少包括：
+### 10.3 内部 RPC
 
-- `ExecuteArtifact`：执行临时或正式产物，用于节点验证与整流测试。
-- `WarmArtifact`：预热版本产物。
-- `InvalidateArtifact`：失效缓存。
-- `HealthCheck`：执行面健康检查。
+Connect RPC 至少覆盖：
 
-Protobuf 契约必须纳入 CI 兼容性检查。
+- temporary artifact execution
+- artifact warm/load
+- artifact invalidation
+- runtime health/readiness
 
-## 11. 前端架构
+协议必须：
 
-`console-web` 按业务域组织：
+- 版本化；
+- 纳入 CI breaking-change 检查；
+- 有 deadline 和消息大小上限；
+- 使用服务间认证；
+- 对执行状态和错误分类有稳定枚举。
 
-- `flows`：决策流列表、项目收纳、画布、节点库、问题面板、整流测试。
-- `versions`：版本与发布首页、版本详情、环境卡、发布确认、回滚。
-- `approvals`：审批中心列表、详情、通过、驳回。
-- `resources`：画像源目录、名单、HTTP 连接器、通道连接器、凭据、接入设置。
-- `org`：成员、角色、高风险能力。
-- `audit`：操作日志查询与详情。
-- `shared`：API client、权限组件、编辑器、Diff 和 JSON 展示组件。
+---
 
-画布状态分三层：
+## 11. 身份、密钥和安全
 
-1. React Flow 视图状态：坐标、缩放、选中、高亮。
-2. Draft 编辑状态：节点配置、连线、表达式 token、输出契约、测试样例值。
-3. 服务端持久状态：Draft revision、dirty 状态、最近一次校验和验证结果。
+### 11.1 身份
 
-节点编辑器采用统一三栏容器：
+- P0 可以使用内置账号和单租户管理员 bootstrap。
+- P1 增加成员邀请、全局角色和高风险能力。
+- 数据模型预留外部 identity provider 字段。
+- 所有控制面请求解析 tenant、actor 和 session。
 
-- 左栏：变量引用面板，由后端返回当前节点前序可达变量模型。
-- 中栏：节点专属配置表单，所有值输入统一使用 `Value Editor(Fixed/Expression)`。
-- 右栏：当前节点最近一次验证结果。
+### 11.2 API Key
 
-表达式 token 在 UI 中不可拆分，底层保存稳定引用，不依赖节点显示名。
+- 数据库只保存不可逆 hash、短指纹、状态、环境和生命周期元数据。
+- 完整值只在创建时返回一次。
+- NEXT 提升后旧 CURRENT 进入 RETIRING，宽限期后撤销。
+- executor 校验只使用 hash。
+- Key 缓存失效必须可收敛，紧急撤销要有明确最长生效时间。
 
-## 12. 安全、权限与密钥
+### 11.3 凭据
 
-### 12.1 身份与权限
+- 凭据密文采用 envelope encryption。
+- 开发和本地可以使用受控开发密钥。
+- 生产必须使用 KMS Provider 或等价受管理密钥，不允许将应用配置中的静态主密钥作为最终生产方案。
+- 解密权限只授予需要执行连接器的服务身份。
+- 密文、解密结果和完整认证 Header 不进入日志。
 
-MVP 使用内置账号体系 + JWT Session。数据模型预留外部身份字段，后续可接 OIDC/SAML。
+### 11.4 SSRF 与 egress
 
-权限分为：
+统一防护：
 
-- 全局角色：只读成员、编辑成员、发布成员、审批成员、管理员。
-- 高风险能力：`Function 编辑`、`凭据管理`、`连接器管理`、`名单数据维护`、`API Key 管理`、`权限管理`。
+- 默认 HTTPS；
+- 禁止云元数据地址、环回、保留地址和未授权私网；
+- DNS 解析结果和跳转目标重复校验；
+- 防 DNS rebinding；
+- 限制方法、Header、响应大小、压缩和超时；
+- 记录目标摘要而非敏感内容；
+- 允许私有化部署通过显式 egress policy 调整。
 
-所有控制面请求必须解析 `tenant_id` 和 `user_id`。所有业务查询强制租户过滤。
+### 11.5 多租户防错
 
-### 12.2 API Key
+- Repository/DAO 层必须要求 tenant context。
+- 关键唯一键和外键包含 tenant 维度。
+- Redis key 只能通过统一 builder 生成。
+- ClickHouse 查询和写入必须包含 tenant。
+- 自动化测试覆盖跨租户越权和缓存污染。
+- 是否启用 PostgreSQL RLS 由 ADR 决定，但不得仅依赖开发约定。
 
-API Key 按环境管理：
+---
 
-- Dev：当前 Key + 备用 Key。
-- Test：当前 Key + 备用 Key。
-- Prod：当前 Key + 备用 Key。
+## 12. 审计、日志和可观测
 
-完整 Key 允许具备 `API Key 管理` 高风险能力的用户在二次确认后复制。数据库不保存明文，保存 hash、加密密文、短指纹、环境、状态、创建人、停用时间和审计元数据。执行面校验只使用 hash；控制台复制完整 Key 时通过 envelope encryption 解密，并写入强审计。
+### 12.1 控制面审计
 
-### 12.3 凭据加密
+- 业务写入和最小审计事件同事务。
+- 异步 worker 补充 Diff、影响范围和展示摘要。
+- 审计事件不可原地更新业务含义，只允许补充派生字段。
+- 敏感数据使用指纹、类型和脱敏摘要。
 
-凭据采用 envelope encryption：
+### 12.2 执行日志
 
-- API Key 用 hash 校验，不保存明文；为满足控制台复制完整 Key，另保存 envelope encryption 加密密文。
-- HTTP/通知连接器凭据保存加密密文。
-- MVP 可使用应用级主密钥或环境密钥。
-- 加密接口预留 KMS Provider，后续可接云 KMS/HSM。
-- 日志和审计只记录凭据版本摘要或指纹。
+- 每次请求、节点和副作用具有稳定关联 ID。
+- 日志包含实际 Artifact、资源指纹、凭据版本指纹和路径。
+- 采样不得丢失失败、超时、高风险副作用和发布后验证请求。
+- 默认不持久化 rawRequest。
 
-### 12.4 多租户隔离
+### 12.3 指标和追踪
 
-- PostgreSQL 表必须包含 `tenant_id`。
-- Redis key 必须包含租户命名空间。
-- ClickHouse 日志必须包含 `tenant_id`。
-- 执行面缓存、限流和产物加载必须按租户隔离。
-- 项目只作为决策流分类，不参与权限、运行或存储隔离。
+- 所有应用接入 OpenTelemetry。
+- 端到端 trace context 贯穿控制面到内部执行 RPC，以及外部请求到节点执行。
+- 高基数业务字段不得作为 Prometheus label。
+- 内部仪表盘至少覆盖执行、发布、队列、日志和依赖健康。
 
-## 13. 部署架构
+---
 
-### 13.1 本地与演示
+## 13. 并发、一致性和幂等
+
+- **ARC-CONSISTENCY-001**：Draft 保存使用 revision 乐观锁。
+- **ARC-CONSISTENCY-002**：版本生成基于明确 Draft revision，不允许读取变化中的草稿。
+- **ARC-CONSISTENCY-003**：申请创建、审批、部署和回滚使用状态条件更新。
+- **ARC-CONSISTENCY-004**：同环境部署串行化。
+- **ARC-CONSISTENCY-005**：外部请求幂等上下文传递到 Counter 和支持幂等的副作用节点。
+- **ARC-CONSISTENCY-006**：Outbox 消费至少一次，消费者必须幂等。
+- **ARC-CONSISTENCY-007**：凭据 active 切换和资源引用影响分析允许最终一致，但执行时实际使用版本必须可追溯。
+
+---
+
+## 14. 部署和运行
+
+### 14.1 本地与演示
 
 Docker Compose 拉起：
 
-- PostgreSQL。
-- Redis。
-- ClickHouse。
-- `control-api`。
-- `control-worker`。
-- `executor-go`。
-- `console-web`。
+- PostgreSQL
+- runtime Redis
+- cache/jobs Redis
+- ClickHouse
+- control-api
+- control-worker
+- executor-go
+- console-web
+- 本地画像源和外联 stub
 
-开发时允许前端 Vite dev server 独立运行，后端和基础设施仍由 Compose 提供。
+### 14.2 生产
 
-### 13.2 生产
+Kubernetes：
 
-生产部署在 Kubernetes：
+- console-web 静态服务或容器
+- control-api 多副本
+- control-worker 独立扩缩
+- executor-go 多副本，按 QPS、CPU 和延迟扩缩
+- 托管 PostgreSQL/Redis/ClickHouse/KMS 优先
 
-- `console-web`：静态资源服务或前端容器。
-- `control-api`：多副本，无状态。
-- `control-worker`：独立副本，按队列压力扩缩。
-- `executor-go`：多副本，按 QPS、延迟和 CPU 扩缩。
+必须补充：
 
-PostgreSQL、Redis、ClickHouse 和对象存储优先使用托管服务，但不在应用架构中绑定具体云厂商。
+- TLS 和服务间认证
+- readiness/liveness
+- 优雅关闭和连接排空
+- PodDisruptionBudget
+- 多可用区
+- migration job
+- 备份、恢复和演练
+- Secret 注入和最小权限
+- Artifact 缓存预热和旧版本保留
 
-发布产物时：
+---
 
-1. 写入 PostgreSQL 版本和产物摘要。
-2. Worker 调用执行面预热产物。
-3. 发布确认时原子切换环境生效指针。
-4. 执行面通过缓存失效或版本指针变更加载新产物。
+## 15. 测试和质量门禁
 
-## 14. 测试策略
+### 15.1 单元与组件
 
-### 14.1 前端测试
+- React 编辑组件和权限态。
+- NestJS 领域服务、状态机和权限 Guard。
+- Go 节点运行时、表达式、状态、日志摘要和错误。
+- Compiler canonicalization 和 hash。
 
-- Vitest + Testing Library 覆盖表单、编辑器和权限态组件。
-- React Flow 关键交互使用组件测试和 Playwright 组合覆盖。
-- Playwright 覆盖完整控制台主链路。
+### 15.2 契约测试
 
-### 14.2 控制面测试
+- Protobuf breaking changes。
+- OpenAPI schema。
+- TypeScript/Go expression golden fixtures。
+- 产品 Flow Model 到执行 Artifact fixture。
+- 节点输入输出 Schema fixture。
 
-- NestJS 单元测试覆盖模块 service。
-- 集成测试覆盖 Prisma/PostgreSQL 事务、权限 Guard、发布申请、资源保护、凭据轮换和审计。
-- 编译器测试覆盖产品模型到执行产物转换。
+### 15.3 集成和 E2E
 
-### 14.3 执行面测试
+P0 必须覆盖：
 
-- Go test 覆盖节点执行、资源读取、表达式求值、Function 沙箱、日志摘要和错误模型。
-- 使用固定版本产物 fixture 验证 Zen-derived 引擎适配。
-- Redis/ClickHouse 相关能力使用集成测试覆盖关键路径。
+1. 创建环境名单。
+2. 创建六节点 Draft。
+3. 节点验证与 `NOT_REACHED`。
+4. 整流测试和测试状态隔离。
+5. 连续外部请求验证 Counter 闭环。
+6. 生成 Flow Version。
+7. 发布 Dev。
+8. Test 自动审批和手动部署。
+9. 使用 Test Key 调用当前生效 Artifact。
+10. 发布失败不影响上一版本。
+11. 审计和执行日志基础链路。
 
-### 14.4 契约与 E2E
+完整 MVP 继续覆盖分支、连接器、通知、名单写、权限、Key 轮换、Prod、回滚、Function 和故障注入。
 
-- Protobuf/Connect RPC 契约纳入 CI。
-- E2E 至少覆盖：
-  1. 创建名单资源。
-  2. 创建决策流。
-  3. 配置 `Request -> Profile Query -> List(query) -> Counter -> Decision Table -> Response`。
-  4. 执行到节点。
-  5. 画布整流测试。
-  6. 生成版本。
-  7. 发起 Test 申请并自动通过。
-  8. 发布 Test。
-  9. 外部 API 调用命中 Test 当前生效版本。
+### 15.4 性能和安全
 
-完整 MVP 还需要补充 HTTP、Notify、Function、Prod 审批发布、回滚、凭据轮换、API Key 轮换和审计查询的 E2E 场景。
+- 参考链路延迟和容量。
+- 热点 flow 和 Counter key。
+- 缓存击穿。
+- 租户越权。
+- SSRF。
+- Key 撤销延迟。
+- Function 资源耗尽。
+- 日志/队列/ClickHouse 故障。
+- 数据恢复演练。
 
-## 15. MVP 风险与约束
+---
 
-### 15.1 双语言契约风险
+## 16. 关键技术风险与前置 Spike
 
-控制面 TypeScript，执行面 Go。必须通过 Protobuf、契约测试和固定 fixture 降低模型漂移风险。
+- **ARC-RISK-001 Zen-derived 模型适配**：验证图、Decision Table、Condition、节点映射和可解释结果。
+- **ARC-RISK-002 表达式一致性**：验证 CEL 子集、TypeScript 编辑体验和 Go 运行 fixture。
+- **ARC-RISK-003 Counter 算法**：验证原子 read-before-write、去重、窗口精度和热点容量。
+- **ARC-RISK-004 Artifact 分发**：验证环境指针原子切换、预热、缓存缺失和控制面故障继续服务。
+- **ARC-RISK-005 Function 隔离**：验证 ESM/async、超时、内存、栈、模块白名单和多租户安全。
+- **ARC-RISK-006 日志可靠写出**：验证 durable queue、批处理、去重和依赖故障。
 
-### 15.2 表达式一致性风险
+Spike 结果可以修订阶段 3 全局工程基线和 Change Framework；不得把未验证假设静默固化到多个 Change。
 
-编辑态校验在 TypeScript，运行态求值在 Go。运行语义以 Go 执行面为准；TypeScript 校验必须通过共享表达式规范和测试 fixture 对齐。
+---
 
-### 15.3 资源指纹与凭据轮换边界
+## 17. 分阶段架构交付
 
-资源行为字段通过指纹保护；凭据 active 版本允许独立轮换。执行日志必须记录实际资源指纹和凭据版本指纹，避免事后无法追溯。
+### P0 架构交付
 
-### 15.4 Function 沙箱复杂度
+- monorepo 与基础设施
+- 控制面/执行面分离
+- canonical flow model
+- 统一表达式基础
+- 六节点运行
+- Draft 验证和测试
+- Flow Version、Dev Artifact、Test Artifact
+- Test 发布与外部 API
+- 最小身份、Key、审计、日志和指标
 
-Function 节点是高风险逃生口，不是常规路径。MVP 必须限制宿主能力、输出大小、超时和白名单模块，避免把 Function 做成无边界脚本平台。
+### P1 架构交付
 
-### 15.5 ClickHouse 运维成本
+- 分支节点
+- 连接器、凭据、HTTP、Notify
+- List 副作用
+- 完整角色和 Key 生命周期
+- Prod 治理与回滚
+- Function 隔离
+- 可靠性、安全和容量硬化
 
-ClickHouse 引入额外组件，但可以避免高频执行日志冲击 PostgreSQL。MVP 控制台不查询执行日志时，ClickHouse 先服务离线分析和内部排障。
+---
 
-## 16. 开发启动验收口径
+## 18. 阶段 1 架构准入结论
 
-技术架构进入实施阶段前，需满足：
+本文完成后，可以进行 Change Capability Framework 拆分。阶段 2 不应把数据库表、API DTO 或 Redis 算法作为独立 Capability；但必须识别具有独立行为契约的平台能力，例如表达式、编译、Artifact、生效路由、状态隔离和日志可靠性。
 
-- monorepo 基础结构可创建。
-- Docker Compose 能拉起 PostgreSQL、Redis、ClickHouse、控制面和执行面。
-- Protobuf 契约能生成 TypeScript 与 Go 代码。
-- 控制面能保存 Draft，并编译至少核心六节点产物。
-- 执行面能加载产物并跑通核心六节点链路。
-- Test 发布能原子切换环境指针。
-- 外部 API 能按 API Key 解析租户和环境。
-- 审计日志进入 PostgreSQL。
-- 执行日志进入 ClickHouse 或补偿队列。
-- 基础指标通过 OpenTelemetry 暴露。
+进入第一个 OpenSpec propose 前，阶段 3 必须基于完整 Framework 进一步固定：
 
-## 17. 后续扩展预留
-
-- OIDC/SAML 企业身份接入。
-- 云 KMS/HSM 密钥管理。
-- 私有化部署 Helm chart 与离线安装包。
-- 自定义画像源。
-- 回放调试与请求级轨迹页面。
-- 实时监控控制台页面。
-- 灰度发布、A/B 实验和策略效果评估。
-- 节点生态开放与第三方扩展。
+- canonical flow 和节点公共契约
+- 表达式子集和错误语义
+- Flow Version/Artifact/Deployment 关系
+- 资源指纹和环境解析边界
+- 执行模式与状态命名空间
+- API/RPC 共同边界
+- 跨 Change 安全与兼容规则
